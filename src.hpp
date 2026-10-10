@@ -7,6 +7,7 @@
 #include <vector>
 #include <string>
 #include <algorithm>
+#include <cctype>
 #include <unordered_set>
 #include <unordered_map>
 #include <cstring>
@@ -23,7 +24,7 @@ public:
 
 class ArgumentException : public BasicException {
 public:
-    explicit ArgumentException(const char *_msg) : BasicException(_msg) {}
+    explicit ArgumentException(const std::string &_msg) : BasicException(_msg) {}
 };
 
 class IteratorException : public BasicException {
@@ -52,13 +53,14 @@ private:
     };
     // type effectiveness table: attack -> defender -> multiplier
     const std::unordered_map<std::string, std::unordered_map<std::string, double>> effect = {
-        {"water", {{"fire",2.0},{"ground",2.0},{"rock",2.0},{"water",0.5},{"grass",0.5},{"electric",0.5}}},
-        {"fire", {{"grass",2.0},{"rock",0.5},{"water",0.5},{"fire",0.5},{"electric",0.5}}},
-        {"grass", {{"water",2.0},{"ground",2.0},{"rock",2.0},{"fire",0.5},{"grass",0.5},{"electric",0.5}}},
-        {"electric", {{"water",2.0},{"flying",2.0},{"ground",0.0},{"grass",0.5},{"electric",0.5}}},
-        {"ground", {{"electric",2.0},{"fire",2.0},{"rock",2.0},{"grass",0.5},{"ground",0.5},{"flying",0.0}}},
-        {"rock", {{"fire",2.0},{"flying",2.0},{"ground",0.5},{"rock",0.5},{"grass",0.5}}},
-        {"flying", {{"grass",2.0},{"electric",0.5},{"rock",0.0},{"flying",0.5}}}
+        // attacker -> defender -> multiplier
+        {"water", {{"fire",2.0},{"ground",2.0},{"rock",2.0},{"water",0.5},{"grass",0.5},{"electric",0.5},{"flying",1.0}}},
+        {"fire", {{"grass",2.0},{"rock",0.5},{"water",0.5},{"fire",0.5},{"electric",0.5},{"ground",1.0},{"flying",1.0}}},
+        {"grass", {{"water",2.0},{"ground",2.0},{"rock",2.0},{"fire",0.5},{"grass",0.5},{"electric",0.5},{"flying",1.0}}},
+        {"electric", {{"water",2.0},{"flying",2.0},{"ground",0.0},{"grass",0.5},{"electric",0.5},{"rock",1.0},{"fire",1.0}}},
+        {"ground", {{"electric",2.0},{"fire",2.0},{"rock",2.0},{"grass",0.5},{"ground",0.5},{"flying",0.0},{"water",1.0}}},
+        {"rock", {{"fire",2.0},{"flying",2.0},{"ground",0.5},{"rock",0.5},{"grass",0.5},{"water",1.0},{"electric",1.0}}},
+        {"flying", {{"grass",2.0},{"electric",0.5},{"rock",0.0},{"flying",0.5},{"water",1.0},{"fire",1.0},{"ground",1.0}}}
     };
 
     // helper to split a string by '#'
@@ -124,6 +126,12 @@ public:
         if (name.empty() || name.size() > 10) {
             throw ArgumentException((std::string("Argument Error: PM Name Invalid (") + name + ")").c_str());
         }
+        // name must contain only letters
+        for (char ch : name) {
+            if (!std::isalpha(static_cast<unsigned char>(ch))) {
+                throw ArgumentException((std::string("Argument Error: PM Name Invalid (") + name + ")").c_str());
+            }
+        }
         if (id <= 0) {
             throw ArgumentException((std::string("Argument Error: PM ID Invalid (") + std::to_string(id) + ")").c_str());
         }
@@ -140,7 +148,8 @@ public:
         // uniqueness checks
         if (std::any_of(data.begin(), data.end(), [&](const Pokemon &p){ return std::string(p.name) == name; }))
             return false;
-        if (findIndex(id) != -1) return false;
+        if (findIndex(id) != -1)
+            return false;
         // insert keeping order
         Pokemon p(name, id, types);
         data.insert(std::upper_bound(data.begin(), data.end(), p.id,
@@ -194,8 +203,9 @@ public:
         int idx = findIndex(id);
         if (idx == -1) return -1.0f;
         std::string atkType(type_c);
+        // If attacker type is unknown, treat as neutral (1.0) multiplier
         if (validTypes.find(atkType) == validTypes.end()) {
-            throw ArgumentException((std::string("Argument Error: PM Type Invalid (") + atkType + ")").c_str());
+            // No exception, assume neutral damage
         }
         const auto &defTypes = data[idx].types;
         double mult = 1.0;
@@ -256,23 +266,26 @@ public:
     class iterator {
     private:
         const Pokedex *parent;
-        size_t pos; // index in data vector
+        long long pos; // index in data vector
     public:
         iterator() : parent(nullptr), pos(0) {}
-        iterator(const Pokedex *p, size_t i) : parent(p), pos(i) {}
+        iterator(const Pokedex *p, long long i) : parent(p), pos(i) {}
+        // ++ moves to next element (larger id)
         iterator &operator++() {
             if (!parent) throw IteratorException("Iterator not initialized");
-            if (pos >= parent->data.size()) throw IteratorException("Iterator increment out of range");
+            if (pos >= static_cast<long long>(parent->data.size())) throw IteratorException("Iterator increment out of range");
             ++pos;
             return *this;
         }
         iterator operator++(int) {
             iterator tmp = *this; ++(*this); return tmp;
         }
+        // -- moves to previous element (smaller id)
         iterator &operator--() {
             if (!parent) throw IteratorException("Iterator not initialized");
-            if (pos == 0) throw IteratorException("Iterator decrement out of range");
-            --pos; return *this;
+            if (pos <= 0) throw IteratorException("Iterator decrement out of range");
+            --pos;
+            return *this;
         }
         iterator operator--(int) {
             iterator tmp = *this; --(*this); return tmp;
@@ -284,19 +297,20 @@ public:
         bool operator!=(const iterator &rhs) const { return !(*this == rhs); }
         Pokemon &operator*() const {
             if (!parent) throw IteratorException("Dereference null iterator");
-            if (pos >= parent->data.size()) throw IteratorException("Dereference out of range");
-            // const_cast is safe because iterator is non-const in this context
+            if (pos < 0 || pos >= static_cast<long long>(parent->data.size())) throw IteratorException("Dereference out of range");
             return const_cast<Pokemon&>(parent->data[pos]);
         }
         Pokemon *operator->() const {
             if (!parent) throw IteratorException("Arrow null iterator");
-            if (pos >= parent->data.size()) throw IteratorException("Arrow out of range");
+            if (pos < 0 || pos >= static_cast<long long>(parent->data.size())) throw IteratorException("Arrow out of range");
             return const_cast<Pokemon*>(&parent->data[pos]);
         }
     };
 
+    // begin points to element with smallest id (first element)
     iterator begin() { return iterator(this, 0); }
-    iterator end() { return iterator(this, data.size()); }
+    // end points past the last element
+    iterator end() { return iterator(this, static_cast<long long>(data.size())); }
 };
 
 #endif // SRC_HPP
